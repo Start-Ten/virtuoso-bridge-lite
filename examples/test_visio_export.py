@@ -5,21 +5,11 @@ dependency-free conversion layer that turns `read_schematic()`-style data into
 placed instances and routed net segments.
 """
 
-import importlib.util
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-VISIO_PY = ROOT / "src" / "virtuoso_bridge" / "virtuoso" / "visio.py"
-
-spec = importlib.util.spec_from_file_location("vb_visio_export", VISIO_PY)
-visio_export = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = visio_export
-spec.loader.exec_module(visio_export)
-
-build_visio_schematic = visio_export.build_visio_schematic
-classify_instance = visio_export.classify_instance
-minimum_spanning_segments = visio_export.minimum_spanning_segments
+from virtuoso_bridge.virtuoso.visio import (
+    build_visio_schematic,
+    classify_instance,
+    minimum_spanning_segments,
+)
 
 
 def main() -> int:
