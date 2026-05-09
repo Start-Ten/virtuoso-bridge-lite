@@ -680,6 +680,64 @@ def cli_load(*, file: str, timeout: int = 60, quiet: bool = False) -> int:
     return 0 if result.status == ExecutionStatus.SUCCESS else 1
 
 
+def cli_eval(*, skill: str | None, stdin: bool, timeout: int = 60,
+             quiet: bool = False) -> int:
+    """Execute a SKILL expression in the running Virtuoso session.
+
+    Companion to :func:`cli_load` for one-liners and round-trip checks
+    where wrapping the snippet in a temp ``.il`` file would be friction.
+    Source the SKILL from argv (``virtuoso-bridge eval 'getCurrentTime()'``)
+    or from stdin (``echo 'expr' | virtuoso-bridge eval --stdin``); the
+    latter sidesteps shell-quoting pain for snippets full of ``"``,
+    parens, and quoted symbols.
+
+    Output: same JSON shape as :func:`cli_load` so consumers don't need
+    to branch on which command produced the result.
+
+    Returns: 0 on SUCCESS, 1 on SKILL-side error, 2 on input misuse
+    (no SKILL provided, or both argv and ``--stdin`` given).
+    """
+    import json
+    import sys
+
+    import virtuoso_bridge as _vb_pkg
+    from virtuoso_bridge.models import ExecutionStatus
+
+    if stdin and skill is not None:
+        print("ERROR: pass SKILL via argv OR --stdin, not both",
+              file=sys.stderr)
+        return 2
+    if stdin:
+        skill = sys.stdin.read()
+    if skill is None or not skill.strip():
+        print("ERROR: empty SKILL expression", file=sys.stderr)
+        return 2
+
+    # Wrap in progn(...) on its own lines so that:
+    #   * multi-statement inputs (`printf(...) "ret"`) work without the
+    #     user adding progn themselves -- the daemon's single-line path
+    #     does `let(((__vb_r <code>)) ...)` which only takes one form;
+    #   * trailing `; comment` doesn't swallow the closing paren --
+    #     the wrapping newline before `)` terminates the line comment;
+    #   * embedded newlines (heredoc / multi-line input) flow through
+    #     unchanged.
+    # The newlines also force the daemon onto its multi-line code path
+    # (temp-file + load), which handles `progn` reliably.
+    wrapped = f"progn(\n{skill}\n)"
+
+    _load_cli_env()
+    client = _vb_pkg.VirtuosoClient.from_env(profile=_get_cli_profile())
+    result = client.execute_skill(wrapped, timeout=timeout)
+
+    if not quiet:
+        print(json.dumps(
+            result.model_dump(mode="json"),
+            indent=2, ensure_ascii=False, default=str,
+        ))
+
+    return 0 if result.status == ExecutionStatus.SUCCESS else 1
+
+
 def cli_dismiss_dialog() -> int:
     """Find and dismiss blocking Virtuoso GUI dialogs via X11."""
     _load_cli_env()
@@ -1014,6 +1072,39 @@ def build_parser() -> argparse.ArgumentParser:
     sp_load.add_argument("--quiet", action="store_true",
                          help="Suppress JSON output; only the exit code is reported")
 
+    sp_eval = subparsers.add_parser(
+        "eval",
+        help="Execute a SKILL expression (one-liner) in the running Virtuoso session",
+        description=(
+            "Run an inline SKILL expression — companion to `load` for\n"
+            "one-liners and round-trip checks.\n\n"
+            "Two input modes:\n"
+            "  virtuoso-bridge eval 'getCurrentTime()'\n"
+            "  echo 'printf(\"hi\\n\")' | virtuoso-bridge eval --stdin\n\n"
+            "--stdin sidesteps shell quoting for snippets with embedded\n"
+            "quotes, parens, or quoted symbols, and is the natural way\n"
+            "to feed multi-line SKILL via heredoc.\n\n"
+            "Multi-statement input is supported transparently — the\n"
+            "expression is wrapped in `progn(...)` before sending, and\n"
+            "the value of the last form is returned.\n\n"
+            "Output: full VirtuosoResult as JSON on stdout (same shape\n"
+            "as `load`)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp_eval.add_argument("skill", nargs="?", default=None,
+                         help="SKILL expression to evaluate (omit when using --stdin)")
+    sp_eval.add_argument("--stdin", action="store_true",
+                         help="Read the SKILL expression from stdin instead of argv")
+    sp_eval.add_argument("-p", "--profile", default=None,
+                         help="Connection profile (reads VB_*_<profile> env vars)")
+    sp_eval.add_argument("--env", default=None,
+                         help="Explicit .env file path (highest priority)")
+    sp_eval.add_argument("--timeout", type=int, default=60,
+                         help="SKILL execution timeout in seconds (default: 60)")
+    sp_eval.add_argument("--quiet", action="store_true",
+                         help="Suppress JSON output; only the exit code is reported")
+
     sp_dismiss = subparsers.add_parser(
         "dismiss-dialog", help="Find and dismiss blocking Virtuoso GUI dialogs")
     sp_dismiss.add_argument("-p", "--profile", default=None,
@@ -1122,6 +1213,12 @@ def main(argv: list[str] | None = None) -> int:
         "license": cli_license,
         "load": lambda: cli_load(
             file=getattr(args, "file"),
+            timeout=getattr(args, "timeout", 60),
+            quiet=getattr(args, "quiet", False),
+        ),
+        "eval": lambda: cli_eval(
+            skill=getattr(args, "skill", None),
+            stdin=getattr(args, "stdin", False),
             timeout=getattr(args, "timeout", 60),
             quiet=getattr(args, "quiet", False),
         ),
