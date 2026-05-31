@@ -46,6 +46,34 @@ result = sim.run_simulation("tb_adc.scs", {"include_files": ["adc.va", "dac.va"]
 | `result.metadata["timings"]` | Upload, exec, download, parse durations |
 | `result.metadata["output_dir"]` | Local path to `.raw` directory |
 
+## Gotchas (Spectre 21.1 + IC618 lab cluster)
+
+These are silent or near-silent foot-guns from real lab runs:
+
+- **`-param X=Y` CLI flag is BROKEN.** Spectre 21.1 parses the value as a
+  second input netlist → `SPECTRE-132: input file has been re-specified as 'X=Y'`.
+  **Workaround**: bake parameters into the netlist (regenerate the master per
+  sweep point with `txt.replace("parameters X=0", f"parameters X={val}")`).
+- **`parameters X=Y` re-declaration after `include "header.scs"` does not
+  update DEPENDENT expressions.** E.g., header has `parameters N=64 t_end=((N+N_extra)/Fs)`,
+  then later `parameters N=256` — N updates but `t_end` stays at 276 ns
+  (eagerly bound from the first declaration). Symptom: tran stops far too
+  early. **Fix**: copy header locally and edit the `parameters` line in place.
+- **Default `timeout=600 s` is too short for noised long-tran**. With
+  `tranNoise=yes` + N≥256 or 6+-way parallel contention, a single run can
+  exceed 600 s wall while spectre is still progressing — bridge reports
+  "Remote command timed out" but spectre.out actually shows clean completion.
+  **Fix**: `SpectreSimulator.from_env(timeout=3600, ...)`.
+- **PSF parser keeps `\<>` escape chars in signal names.** Saved signal
+  `DOUT\<0\>` parses as dict key `r"DOUT\<0\>"`, not `"DOUT<0>"`. Symptom:
+  `KeyError: 'DOUT<0>'` even though save list looks right.
+- **`strobeoutput=all` in psfascii outputs only the continuous tran.** Despite
+  the docs implying "both continuous + strobed", Spectre 21.1's psfascii
+  emitter writes just the continuous stream into `tran.tran.tran`. You'll get
+  ~140k samples per signal instead of N strobed values. **Fix**: either
+  Python-strobe yourself with `np.searchsorted(t, k/Fs + offset)`, or use
+  `strobeoutput=strobeonly` (which DOES work and shrinks the PSF ~1500×).
+
 ## Parallel simulation
 
 Submit simulations that run concurrently — each gets its own remote directory, no conflicts. For full API and multi-server setup, read `references/parallel.md`.
